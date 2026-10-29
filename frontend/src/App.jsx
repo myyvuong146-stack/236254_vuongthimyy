@@ -1,44 +1,103 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
-const API_URL = "http://localhost:5000/api/foods";
+const API_URL =
+  import.meta.env.VITE_API_URL || "http://localhost:5000/api/foods";
+
+const emptyForm = {
+  foodId: "",
+  name: "",
+  category: "Món chính",
+  cuisine: "",
+  ingredients: "",
+  price: "",
+  quantity: "0",
+  description: "",
+  imageUrl: "",
+};
 
 function App() {
   const [foods, setFoods] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [form, setForm] = useState({
-    name: "",
-    description: "",
-    price: "",
-    category: "Món chính",
-    image: "",
-  });
+  const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [selectedFood, setSelectedFood] = useState(null);
 
-  async function loadFoods() {
+  async function loadFoods(keyword = search) {
+    setLoading(true);
+    setError("");
+
     try {
-      setError("");
-      const response = await fetch(API_URL);
-      if (!response.ok) throw new Error("Không tải được danh sách món ăn");
-      setFoods(await response.json());
-    } catch {
-      setError("Không kết nối được backend. Hãy kiểm tra server cổng 5000.");
+      const url = new URL(API_URL);
+      if (keyword.trim()) url.searchParams.set("search", keyword.trim());
+
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Không tải được danh sách món ăn.");
+
+      const data = await response.json();
+      setFoods(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(
+        err.message || "Không kết nối được backend. Hãy kiểm tra server.",
+      );
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadFoods();
+    loadFoods("");
+    // Chỉ tải danh sách khi mở trang.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleChange(event) {
-    setForm({ ...form, [event.target.name]: event.target.value });
+    const { name, value } = event.target;
+    setForm((previous) => ({ ...previous, [name]: value }));
+  }
+
+  function resetForm() {
+    setForm(emptyForm);
+    setEditingId(null);
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
+    setError("");
+    setNotice("");
+
+    if (!form.foodId.trim() || !form.name.trim() || form.price === "") {
+      setError("Vui lòng nhập mã món ăn, tên món ăn và giá.");
+      return;
+    }
+
+    if (Number(form.price) < 0 || !Number.isFinite(Number(form.price))) {
+      setError("Giá phải là số không âm.");
+      return;
+    }
+
+    if (Number(form.quantity) < 0 || !Number.isFinite(Number(form.quantity))) {
+      setError("Số lượng phải là số không âm.");
+      return;
+    }
+
+    const payload = {
+      ...form,
+      foodId: form.foodId.trim(),
+      name: form.name.trim(),
+      price: Number(form.price),
+      quantity: Number(form.quantity),
+      ingredients: form.ingredients
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    };
+
+    setSaving(true);
 
     try {
       const response = await fetch(
@@ -46,192 +105,303 @@ function App() {
         {
           method: editingId ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...form,
-            price: Number(form.price),
-          }),
+          body: JSON.stringify(payload),
         },
       );
 
+      const result = await response.json();
+
       if (!response.ok) {
-        const result = await response.json();
-        throw new Error(result.message || "Không lưu được món ăn");
+        throw new Error(result.message || "Không lưu được món ăn.");
       }
 
-      setForm({
-        name: "",
-        description: "",
-        price: "",
-        category: "Món chính",
-        image: "",
-      });
-      setEditingId(null);
+      setNotice(
+        editingId ? "Cập nhật món ăn thành công!" : "Thêm món ăn thành công!",
+      );
+      resetForm();
       await loadFoods();
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Có lỗi xảy ra khi lưu món ăn.");
+    } finally {
+      setSaving(false);
     }
   }
 
   function handleEdit(food) {
     setEditingId(food._id);
+    setSelectedFood(null);
+    setError("");
+    setNotice("");
+
     setForm({
+      foodId: food.foodId || "",
       name: food.name || "",
-      description: food.description || "",
-      price: String(food.price ?? ""),
       category: food.category || "Khác",
-      image: food.image || "",
+      cuisine: food.cuisine || "",
+      ingredients: Array.isArray(food.ingredients)
+        ? food.ingredients.join(", ")
+        : "",
+      price: String(food.price ?? ""),
+      quantity: String(food.quantity ?? 0),
+      description: food.description || "",
+      imageUrl: food.imageUrl || food.image || "",
     });
+
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function handleDelete(id) {
-    if (!window.confirm("Bạn có chắc muốn xóa món ăn này?")) return;
+  async function handleDelete(food) {
+    const confirmed = window.confirm(
+      `Em có chắc muốn xóa món "${food.name}" không?`,
+    );
+
+    if (!confirmed) return;
+
+    setError("");
+    setNotice("");
 
     try {
-      const response = await fetch(`${API_URL}/${id}`, {
+      const response = await fetch(`${API_URL}/${food._id}`, {
         method: "DELETE",
       });
-      if (!response.ok) throw new Error("Không xóa được món ăn");
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || "Không xóa được món ăn.");
+      }
+
+      setNotice("Đã xóa món ăn thành công!");
+      if (selectedFood?._id === food._id) setSelectedFood(null);
       await loadFoods();
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Có lỗi xảy ra khi xóa món ăn.");
     }
   }
 
-  function cancelEdit() {
-    setEditingId(null);
-    setForm({
-      name: "",
-      description: "",
-      price: "",
-      category: "Món chính",
-      image: "",
-    });
+  function handleSearch(event) {
+    event.preventDefault();
+    loadFoods(search);
   }
 
   return (
     <main className="app">
       <header className="hero">
-        <div className="hero-icon">🍲</div>
-        <p className="eyebrow">QUẢN LÝ NHÀ BẾP</p>
+        <div className="hero-icon">🍜</div>
+        <p className="eyebrow">FOOD MANAGEMENT SYSTEM</p>
         <h1>Quản lý món ăn</h1>
-        <p className="subtitle">
-          Quản lý thực đơn của bạn đơn giản và tiện lợi
-        </p>
+        <p>Quản lý thực đơn dễ dàng với React, Node.js và MongoDB.</p>
       </header>
 
-      <section className="content">
-        <form className="food-form" onSubmit={handleSubmit}>
-          <h2>{editingId ? "✏️ Cập nhật món ăn" : "➕ Thêm món ăn mới"}</h2>
-
-          <label>
-            Tên món ăn *
-            <input
-              name="name"
-              value={form.name}
-              onChange={handleChange}
-              placeholder="Ví dụ: Phở bò"
-              required
-            />
-          </label>
-
-          <div className="form-row">
-            <label>
-              Giá (VNĐ) *
-              <input
-                name="price"
-                type="number"
-                min="0"
-                value={form.price}
-                onChange={handleChange}
-                placeholder="50000"
-                required
-              />
-            </label>
-
-            <label>
-              Danh mục
-              <select
-                name="category"
-                value={form.category}
-                onChange={handleChange}
-              >
-                <option>Món chính</option>
-                <option>Món phụ</option>
-                <option>Đồ uống</option>
-                <option>Tráng miệng</option>
-                <option>Khác</option>
-              </select>
-            </label>
-          </div>
-
-          <label>
-            Mô tả
-            <textarea
-              name="description"
-              value={form.description}
-              onChange={handleChange}
-              placeholder="Mô tả ngắn về món ăn..."
-              rows="3"
-            />
-          </label>
-
-          <label>
-            Đường dẫn hình ảnh (không bắt buộc)
-            <input
-              name="image"
-              type="url"
-              value={form.image}
-              onChange={handleChange}
-              placeholder="https://..."
-            />
-          </label>
-
-          <div className="form-actions">
-            <button className="primary-button" type="submit">
-              {editingId ? "Lưu thay đổi" : "Thêm món ăn"}
-            </button>
+      <div className="content">
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">FOOD INFORMATION</p>
+              <h2>{editingId ? "Cập nhật món ăn" : "Thêm món ăn mới"}</h2>
+            </div>
             {editingId && (
               <button
                 className="secondary-button"
                 type="button"
-                onClick={cancelEdit}
+                onClick={resetForm}
               >
-                Hủy
+                Hủy sửa
               </button>
             )}
           </div>
-        </form>
 
-        <section className="food-section">
+          <form onSubmit={handleSubmit}>
+            <div className="form-row">
+              <label>
+                Mã món ăn *
+                <input
+                  name="foodId"
+                  value={form.foodId}
+                  onChange={handleChange}
+                  placeholder="VD: FOOD001"
+                  required
+                />
+              </label>
+
+              <label>
+                Tên món ăn *
+                <input
+                  name="name"
+                  value={form.name}
+                  onChange={handleChange}
+                  placeholder="VD: Phở bò"
+                  required
+                />
+              </label>
+            </div>
+
+            <div className="form-row">
+              <label>
+                Giá (VNĐ) *
+                <input
+                  name="price"
+                  type="number"
+                  min="0"
+                  step="1000"
+                  value={form.price}
+                  onChange={handleChange}
+                  placeholder="VD: 50000"
+                  required
+                />
+              </label>
+
+              <label>
+                Số lượng
+                <input
+                  name="quantity"
+                  type="number"
+                  min="0"
+                  value={form.quantity}
+                  onChange={handleChange}
+                />
+              </label>
+            </div>
+
+            <div className="form-row">
+              <label>
+                Danh mục
+                <select
+                  name="category"
+                  value={form.category}
+                  onChange={handleChange}
+                >
+                  <option>Món chính</option>
+                  <option>Món khai vị</option>
+                  <option>Đồ uống</option>
+                  <option>Tráng miệng</option>
+                  <option>Khác</option>
+                </select>
+              </label>
+
+              <label>
+                Ẩm thực
+                <input
+                  name="cuisine"
+                  value={form.cuisine}
+                  onChange={handleChange}
+                  placeholder="VD: Việt Nam"
+                />
+              </label>
+            </div>
+
+            <label>
+              Nguyên liệu
+              <input
+                name="ingredients"
+                value={form.ingredients}
+                onChange={handleChange}
+                placeholder="Phở, thịt bò, hành lá (phân cách bằng dấu phẩy)"
+              />
+            </label>
+
+            <label>
+              Đường dẫn hình ảnh
+              <input
+                name="imageUrl"
+                type="url"
+                value={form.imageUrl}
+                onChange={handleChange}
+                placeholder="https://example.com/food.jpg"
+              />
+            </label>
+
+            <label>
+              Mô tả
+              <textarea
+                name="description"
+                value={form.description}
+                onChange={handleChange}
+                placeholder="Mô tả ngắn về món ăn..."
+                rows="3"
+              />
+            </label>
+
+            {form.imageUrl && (
+              <div className="image-preview">
+                <img
+                  src={form.imageUrl}
+                  alt="Xem trước món ăn"
+                  onError={(event) => {
+                    event.currentTarget.style.display = "none";
+                  }}
+                />
+              </div>
+            )}
+
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving
+                ? "Đang lưu..."
+                : editingId
+                  ? "Lưu thay đổi"
+                  : "＋ Thêm món ăn"}
+            </button>
+          </form>
+        </section>
+
+        <section className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">THỰC ĐƠN CỦA BẠN</p>
+              <p className="eyebrow">YOUR MENU</p>
               <h2>Danh sách món ăn</h2>
             </div>
             <span className="count">{foods.length} món</span>
           </div>
 
+          <form className="search-form" onSubmit={handleSearch}>
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Tìm theo tên, danh mục hoặc ẩm thực..."
+              aria-label="Tìm kiếm món ăn"
+            />
+            <button className="primary-button" type="submit">
+              Tìm kiếm
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                setSearch("");
+                loadFoods("");
+              }}
+            >
+              Xóa lọc
+            </button>
+          </form>
+
           {error && <p className="error-message">{error}</p>}
+          {notice && <p className="success-message">{notice}</p>}
+
           {loading ? (
-            <p className="empty-state">Đang tải món ăn...</p>
+            <p className="empty-state">Đang tải danh sách món ăn...</p>
           ) : foods.length === 0 ? (
             <p className="empty-state">
-              Chưa có món ăn. Hãy thêm món đầu tiên!
+              Chưa có món ăn phù hợp. Em có thể thêm món mới bằng biểu mẫu phía
+              trên.
             </p>
           ) : (
             <div className="food-grid">
               {foods.map((food) => (
                 <article className="food-card" key={food._id}>
-                  {food.image ? (
+                  {food.imageUrl || food.image ? (
                     <img
                       className="food-image"
-                      src={food.image}
+                      src={food.imageUrl || food.image}
                       alt={food.name}
+                      onError={(event) => {
+                        event.currentTarget.style.display = "none";
+                      }}
                     />
                   ) : (
-                    <div className="food-placeholder">🍜</div>
+                    <div className="food-placeholder">🍲</div>
                   )}
+
                   <div className="food-card-body">
                     <span className="category-tag">
                       {food.category || "Khác"}
@@ -243,7 +413,19 @@ function App() {
                     <p className="food-price">
                       {Number(food.price).toLocaleString("vi-VN")} ₫
                     </p>
+                    <p className="food-meta">
+                      Mã: {food.foodId || "Chưa cập nhật"} · Số lượng:{" "}
+                      {food.quantity ?? 0}
+                    </p>
+
                     <div className="card-actions">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => setSelectedFood(food)}
+                      >
+                        Chi tiết
+                      </button>
                       <button
                         className="secondary-button"
                         type="button"
@@ -254,7 +436,7 @@ function App() {
                       <button
                         className="delete-button"
                         type="button"
-                        onClick={() => handleDelete(food._id)}
+                        onClick={() => handleDelete(food)}
                       >
                         Xóa
                       </button>
@@ -265,7 +447,78 @@ function App() {
             </div>
           )}
         </section>
-      </section>
+      </div>
+
+      {selectedFood && (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setSelectedFood(null);
+          }}
+        >
+          <section
+            className="detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="detail-title"
+          >
+            <div className="section-heading">
+              <h2 id="detail-title">Chi tiết món ăn</h2>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setSelectedFood(null)}
+              >
+                Đóng
+              </button>
+            </div>
+
+            <h3>{selectedFood.name}</h3>
+            <p>
+              <strong>Mã món:</strong> {selectedFood.foodId || "Chưa cập nhật"}
+            </p>
+            <p>
+              <strong>Danh mục:</strong> {selectedFood.category || "Khác"}
+            </p>
+            <p>
+              <strong>Ẩm thực:</strong>{" "}
+              {selectedFood.cuisine || "Chưa cập nhật"}
+            </p>
+            <p>
+              <strong>Nguyên liệu:</strong>{" "}
+              {Array.isArray(selectedFood.ingredients) &&
+              selectedFood.ingredients.length
+                ? selectedFood.ingredients.join(", ")
+                : "Chưa cập nhật"}
+            </p>
+            <p>
+              <strong>Giá:</strong>{" "}
+              {Number(selectedFood.price).toLocaleString("vi-VN")} ₫
+            </p>
+            <p>
+              <strong>Số lượng:</strong> {selectedFood.quantity ?? 0}
+            </p>
+            <p>
+              <strong>Mô tả:</strong>{" "}
+              {selectedFood.description || "Chưa có mô tả"}
+            </p>
+            {(selectedFood.imageUrl || selectedFood.image) && (
+              <img
+                className="detail-image"
+                src={selectedFood.imageUrl || selectedFood.image}
+                alt={selectedFood.name}
+              />
+            )}
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => handleEdit(selectedFood)}
+            >
+              Sửa món ăn này
+            </button>
+          </section>
+        </div>
+      )}
 
       <footer>Ứng dụng quản lý món ăn · React + Node.js + MongoDB</footer>
     </main>
